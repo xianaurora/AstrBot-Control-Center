@@ -52,12 +52,39 @@ jobs:
           echo "Android 项目目录：$PROJECT_DIR"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
+      - name: 修复源码兼容问题
+        shell: bash
+        run: |
+          set -e
+
+          MAIN_ACTIVITY="$(find "$PROJECT_DIR" -type f -name 'MainActivity.kt' | head -n 1)"
+
+          if [ -z "$MAIN_ACTIVITY" ]; then
+            echo "错误：没有找到 MainActivity.kt"
+            exit 1
+          fi
+
+          echo "正在修改：$MAIN_ACTIVITY"
+
+          sed -i \
+            's/window\.isFrameRateBoostOnTouchEnabled = true/window.setFrameRateBoostOnTouchEnabled(true)/' \
+            "$MAIN_ACTIVITY"
+
+          echo "修改后的代码："
+          grep -n "FrameRateBoost" "$MAIN_ACTIVITY"
+
+          if ! grep -q "window.setFrameRateBoostOnTouchEnabled(true)" "$MAIN_ACTIVITY"; then
+            echo "错误：源码修复没有成功"
+            exit 1
+          fi
+
       - name: 配置 Gradle 9.5.0
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.5.0"
 
-      - name: 显示环境
+      - name: 显示构建环境
+        shell: bash
         run: |
           java -version
           gradle --version
@@ -65,6 +92,7 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR"
 
       - name: 编译 Debug APK
+        shell: bash
         run: |
           gradle \
             -p "$PROJECT_DIR" \
@@ -75,5 +103,5 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: AstrBot-Control-Center-debug
-          path: extracted/**/app/build/outputs/apk/debug/app-debug.apk
+          path: extracted/**/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
