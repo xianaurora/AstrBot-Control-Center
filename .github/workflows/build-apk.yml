@@ -1,109 +1,157 @@
-name: Build WAI Pad APK
+name: Build LocalForge APK
 
 on:
   workflow_dispatch:
+
   push:
-    branches: [ main ]
+    branches:
+      - main
+    paths:
+      - "LocalForge_source.zip"
+      - ".github/workflows/build-apk.yml"
 
 permissions:
   contents: read
 
 jobs:
   build:
+    name: Build LocalForge
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
+      # 1. 拉取当前仓库
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
+      # 2. JDK 17
+      - name: Setup JDK 17
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
+      # 3. Android SDK
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
-      - name: Setup Gradle 8.10.2
-        uses: gradle/actions/setup-gradle@v4
+      # 4. 安装 LocalForge 所需 Android API 35
+      - name: Install Android SDK 35
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      # 5. LocalForge v0.2 使用 AGP 8.7.3
+      #    固定 Gradle 8.9
+      - name: Setup Gradle 8.9
+        uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: '8.10.2'
+          gradle-version: "8.9"
 
-      - name: Prepare WAI Pad source
+      # 6. 解压源码
+      - name: Extract LocalForge source
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          # 如果源码已经直接上传，则不需要解压
-          if find "$GITHUB_WORKSPACE" \
-              -type f \
-              -path '*/android/settings.gradle.kts' \
-              -print -quit | grep -q .; then
-            echo "Android 源码已存在，跳过解压"
-            exit 0
-          fi
+          rm -rf build-src
+          mkdir -p build-src
 
-          ZIP="$(find "$GITHUB_WORKSPACE" \
-              -maxdepth 2 \
-              -type f \
-              -name 'WAI_Pad*_source.zip' \
-              -print -quit)"
+          unzip -q LocalForge_source.zip -d build-src
 
-          if [ -z "$ZIP" ]; then
-            echo "::error::既没有找到 Android 源码，也没有找到 WAI_Pad*_source.zip"
-            exit 1
-          fi
+          echo "===== ZIP extracted ====="
+          find build-src -maxdepth 3 -type f | sort | head -100
 
-          echo "找到源码包：$ZIP"
-
-          mkdir -p "$GITHUB_WORKSPACE/extracted"
-          unzip -q "$ZIP" -d "$GITHUB_WORKSPACE/extracted"
-
-          echo "源码解压完成"
-
-      - name: Locate Android project
-        id: project
+      # 7. 自动寻找 settings.gradle.kts
+      #    所以 ZIP 外面多套一层目录也没关系
+      - name: Detect Gradle project
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          SETTINGS="$(find "$GITHUB_WORKSPACE" \
-            -type f \
-            -path '*/android/settings.gradle.kts' \
-            -print -quit)"
+          SETTINGS="$(find build-src -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            | head -1)"
 
           if [ -z "$SETTINGS" ]; then
-            echo "::error::解压后仍然没有找到 android/settings.gradle.kts"
-            echo "当前目录内容："
-            find "$GITHUB_WORKSPACE" -maxdepth 4 -type f | head -100
+            echo "ERROR: settings.gradle(.kts) not found"
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
 
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Android project: $PROJECT_DIR"
+          echo "Detected project:"
+          echo "$PROJECT_DIR"
 
-      - name: Show build environment
-        working-directory: ${{ steps.project.outputs.dir }}
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      # 8. 显示环境
+      - name: Environment info
+        shell: bash
         run: |
+          echo "===== Java ====="
           java -version
+
+          echo "===== Gradle ====="
           gradle --version
-          ls -la
 
+          echo "===== Android SDK ====="
+          echo "$ANDROID_SDK_ROOT"
+
+          echo "===== Project ====="
+          echo "$PROJECT_DIR"
+
+      # 9. 编译
       - name: Build Debug APK
-        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         run: |
-          gradle :app:assembleDebug \
-            --stacktrace \
-            --warning-mode all
+          set -e
 
+          cd "$PROJECT_DIR"
+
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            :app:assembleDebug
+
+      # 10. 找 APK
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p artifacts
+
+          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
+            -type f \
+            -name "*.apk" \
+            | head -1)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK not found"
+            find "$PROJECT_DIR" -type f -name "*.apk" || true
+            exit 1
+          fi
+
+          echo "APK found:"
+          echo "$APK"
+
+          cp "$APK" artifacts/LocalForge-v0.2-debug.apk
+
+          sha256sum artifacts/LocalForge-v0.2-debug.apk \
+            | tee artifacts/SHA256SUMS.txt
+
+      # 11. 上传 APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: WAI-Pad-v0.3.1-debug
-          path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk
+          name: LocalForge-v0.2-debug
+          path: |
+            artifacts/LocalForge-v0.2-debug.apk
+            artifacts/SHA256SUMS.txt
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
