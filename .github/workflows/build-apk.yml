@@ -52,7 +52,7 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      # 解压 WAI Pad
+      # 解压 WAI Pad（自动查找 ZIP）
       - name: Extract WAI Pad source
         shell: bash
         run: |
@@ -61,7 +61,21 @@ jobs:
           rm -rf build-src
           mkdir -p build-src
 
-          unzip -q WAI_Pad_v0.3.4.15_source.zip -d build-src
+          ZIP_FILE="$(find . -maxdepth 2 -type f \
+            -iname "*WAI*Pad*.zip" \
+            | head -1)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: WAI Pad source ZIP not found"
+            echo "Available ZIP files:"
+            find . -maxdepth 2 -type f -iname "*.zip" -print
+            exit 1
+          fi
+
+          echo "Using ZIP:"
+          echo "$ZIP_FILE"
+
+          unzip -q "$ZIP_FILE" -d build-src
 
           echo "===== Source extracted ====="
           find build-src -maxdepth 4 -type f | sort | head -100
