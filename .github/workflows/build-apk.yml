@@ -58,22 +58,22 @@ jobs:
         run: |
           set -e
 
-          rm -rf build-src
-          mkdir -p build-src
-
-          ZIP_FILE="$(find . -maxdepth 2 -type f \
-            -iname "*WAI*Pad*.zip" \
+          ZIP_FILE="$(find . -type f \
+            -iname "WAI_Pad*_source.zip" \
             | head -1)"
 
           if [ -z "$ZIP_FILE" ]; then
             echo "ERROR: WAI Pad source ZIP not found"
             echo "Available ZIP files:"
-            find . -maxdepth 2 -type f -iname "*.zip" -print
+            find . -type f -iname "*.zip" -print
             exit 1
           fi
 
           echo "Using ZIP:"
           echo "$ZIP_FILE"
+
+          rm -rf build-src
+          mkdir -p build-src
 
           unzip -q "$ZIP_FILE" -d build-src
 
