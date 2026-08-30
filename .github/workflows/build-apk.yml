@@ -1,1 +1,192 @@
+name: Build WAI Pad APK
 
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Build type"
+        required: true
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - release
+
+  push:
+    branches:
+      - main
+    paths:
+      - "WAI_Pad_*_source.zip"
+      - "**/WAI_Pad_*_source.zip"
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wai-pad-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build WAI Pad
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK 35
+        shell: bash
+        run: |
+          set -e
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Setup Gradle 8.9
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.9"
+
+      - name: Select build type
+        shell: bash
+        env:
+          INPUT_BUILD_TYPE: ${{ github.event.inputs.build_type }}
+        run: |
+          set -e
+          BUILD_TYPE="${INPUT_BUILD_TYPE:-debug}"
+          if [ "$BUILD_TYPE" = "release" ]; then
+            GRADLE_TASK=":app:assembleRelease"
+          else
+            BUILD_TYPE="debug"
+            GRADLE_TASK=":app:assembleDebug"
+          fi
+          echo "BUILD_TYPE=$BUILD_TYPE" >> "$GITHUB_ENV"
+          echo "GRADLE_TASK=$GRADLE_TASK" >> "$GITHUB_ENV"
+
+      - name: Find WAI Pad source ZIP
+        shell: bash
+        run: |
+          set -e
+          ZIP_FILE="$(find . -type f -iname "WAI_Pad*_source.zip" | sort -V | tail -1)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: WAI Pad source ZIP not found"
+            find . -type f -iname "*.zip" -print || true
+            exit 1
+          fi
+          echo "Using ZIP: $ZIP_FILE"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      - name: Detect version
+        shell: bash
+        run: |
+          set -e
+          FILE_NAME="$(basename "$ZIP_FILE")"
+          VERSION_TAG="$(printf '%s\n' "$FILE_NAME" | sed -n 's/^WAI_Pad_\(.*\)_source\.zip$/\1/p')"
+          if [ -z "$VERSION_TAG" ]; then
+            VERSION_TAG="unknown"
+          fi
+          VERSION_TAG="$(printf '%s' "$VERSION_TAG" | sed 's/[^A-Za-z0-9._-]/_/g')"
+          echo "VERSION_TAG=$VERSION_TAG" >> "$GITHUB_ENV"
+
+      - name: Extract WAI Pad source
+        shell: bash
+        run: |
+          set -e
+          rm -rf build-src
+          mkdir -p build-src
+          unzip -q "$ZIP_FILE" -d build-src
+          echo "===== Source extracted ====="
+          find build-src -maxdepth 4 -type f | sort | head -100
+
+      - name: Detect Android project
+        shell: bash
+        run: |
+          set -e
+          SETTINGS="$(find build-src -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \) | head -1)"
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: settings.gradle(.kts) not found"
+            exit 1
+          fi
+          PROJECT_DIR="$(dirname "$SETTINGS")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project: $PROJECT_DIR"
+
+      - name: Environment info
+        shell: bash
+        run: |
+          java -version
+          gradle --version
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "PROJECT_DIR=$PROJECT_DIR"
+          echo "VERSION_TAG=$VERSION_TAG"
+          echo "BUILD_TYPE=$BUILD_TYPE"
+
+      - name: Build WAI Pad APK
+        shell: bash
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew --no-daemon --stacktrace "$GRADLE_TASK"
+          else
+            gradle --no-daemon --stacktrace "$GRADLE_TASK"
+          fi
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -e
+          mkdir -p artifacts
+          APK_DIR="$PROJECT_DIR/app/build/outputs/apk/$BUILD_TYPE"
+          if [ ! -d "$APK_DIR" ]; then
+            echo "ERROR: APK output directory not found"
+            find "$PROJECT_DIR" -type f -name "*.apk" -print || true
+            exit 1
+          fi
+          APK="$(find "$APK_DIR" -type f -name "*.apk" | sort | head -1)"
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK not found"
+            exit 1
+          fi
+          FINAL_APK="WAI-Pad-${VERSION_TAG}-${BUILD_TYPE}.apk"
+          cp "$APK" "artifacts/$FINAL_APK"
+          sha256sum "artifacts/$FINAL_APK" | tee artifacts/SHA256SUMS.txt
+          echo "FINAL_APK=$FINAL_APK" >> "$GITHUB_ENV"
+
+      - name: Upload WAI Pad APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WAI-Pad-${{ env.VERSION_TAG }}-${{ env.BUILD_TYPE }}
+          path: |
+            artifacts/${{ env.FINAL_APK }}
+            artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WAI-Pad-build-failure-reports
+          path: |
+            build-src/**/build/reports/**
+            build-src/**/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 7
