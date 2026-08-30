@@ -7,8 +7,7 @@ on:
     branches:
       - main
     paths:
-      - "WAI_Pad_v0.3.4.15_source.zip"
-      - ".github/workflows/build-apk.yml"
+      - "WAI_Pad_*_source.zip"          # 🔁 匹配任意类似文件
 
 permissions:
   contents: read
@@ -38,30 +37,25 @@ jobs:
         shell: bash
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-
           sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      # WAI Pad:
-      # AGP 8.7.3
-      # Gradle 8.9
+      # WAI Pad: AGP 8.7.3, Gradle 8.9
       - name: Setup Gradle 8.9
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.9"
 
-      # 解压 WAI Pad（自动查找 ZIP）
+      # 解压 WAI Pad 源码，并提取版本标签
       - name: Extract WAI Pad source
         shell: bash
         run: |
           set -e
 
-          ZIP_FILE="$(find . -type f \
-            -iname "WAI_Pad*_source.zip" \
-            | head -1)"
-
+          # 查找匹配的 ZIP 文件
+          ZIP_FILE="$(find . -type f -iname "WAI_Pad*_source.zip" | head -1)"
           if [ -z "$ZIP_FILE" ]; then
             echo "ERROR: WAI Pad source ZIP not found"
             echo "Available ZIP files:"
@@ -69,38 +63,37 @@ jobs:
             exit 1
           fi
 
-          echo "Using ZIP:"
-          echo "$ZIP_FILE"
+          echo "Using ZIP: $ZIP_FILE"
 
+          # 提取版本标签（例如：WAI_Pad_v0.3.4.16_stable_style_detail_fix_source.zip -> v0.3.4.16_stable_style_detail_fix）
+          VERSION_TAG="$(basename "$ZIP_FILE" | sed -n 's/^WAI_Pad_\(.*\)_source\.zip$/\1/p')"
+          if [ -z "$VERSION_TAG" ]; then
+            echo "WARNING: Could not extract version tag, using 'unknown'"
+            VERSION_TAG="unknown"
+          fi
+          echo "Version tag: $VERSION_TAG"
+          echo "VERSION_TAG=$VERSION_TAG" >> "$GITHUB_ENV"
+
+          # 解压
           rm -rf build-src
           mkdir -p build-src
-
           unzip -q "$ZIP_FILE" -d build-src
 
           echo "===== Source extracted ====="
           find build-src -maxdepth 4 -type f | sort | head -100
 
-      # 自动寻找 android Gradle 项目
+      # 自动寻找 Android 项目目录
       - name: Detect Android project
         shell: bash
         run: |
           set -e
-
-          SETTINGS="$(find build-src \
-            -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
-            | head -1)"
-
+          SETTINGS="$(find build-src -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \) | head -1)"
           if [ -z "$SETTINGS" ]; then
             echo "ERROR: settings.gradle(.kts) not found"
             exit 1
           fi
-
           PROJECT_DIR="$(dirname "$SETTINGS")"
-
-          echo "Android project:"
-          echo "$PROJECT_DIR"
-
+          echo "Android project: $PROJECT_DIR"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
       # 显示构建环境
@@ -109,30 +102,24 @@ jobs:
         run: |
           echo "===== Java ====="
           java -version
-
           echo "===== Gradle ====="
           gradle --version
-
           echo "===== Android SDK ====="
           echo "$ANDROID_SDK_ROOT"
-
           echo "===== Project ====="
           echo "$PROJECT_DIR"
+          echo "===== Version tag ====="
+          echo "$VERSION_TAG"
 
-      # 编译 Debug
+      # 编译 Debug APK
       - name: Build WAI Pad Debug APK
         shell: bash
         run: |
           set -e
-
           cd "$PROJECT_DIR"
+          gradle --no-daemon --stacktrace :app:assembleDebug
 
-          gradle \
-            --no-daemon \
-            --stacktrace \
-            :app:assembleDebug
-
-      # 收集 APK
+      # 收集 APK 并重命名（使用动态版本标签）
       - name: Collect APK
         shell: bash
         run: |
@@ -140,38 +127,26 @@ jobs:
 
           mkdir -p artifacts
 
-          echo "===== APK files ====="
-
-          find "$PROJECT_DIR" \
-            -type f \
-            -name "*.apk" \
-            -print
-
-          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
-            -type f \
-            -name "*.apk" \
-            | head -1)"
-
+          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -type f -name "*.apk" | head -1)"
           if [ -z "$APK" ]; then
             echo "ERROR: Debug APK not found"
             exit 1
           fi
 
-          echo "Selected APK:"
-          echo "$APK"
+          # 使用版本标签命名
+          FINAL_APK="WAI-Pad-${VERSION_TAG}-debug.apk"
+          cp "$APK" "artifacts/$FINAL_APK"
+          echo "APK saved as: $FINAL_APK"
 
-          cp "$APK" artifacts/WAI-Pad-v0.3.4.15-debug.apk
+          sha256sum "artifacts/$FINAL_APK" | tee artifacts/SHA256SUMS.txt
 
-          sha256sum artifacts/WAI-Pad-v0.3.4.15-debug.apk \
-            | tee artifacts/SHA256SUMS.txt
-
-      # 上传编译产物
+      # 上传构建产物
       - name: Upload WAI Pad APK
         uses: actions/upload-artifact@v4
         with:
-          name: WAI-Pad-v0.3.4.15-debug
+          name: WAI-Pad-${{ env.VERSION_TAG }}-debug
           path: |
-            artifacts/WAI-Pad-v0.3.4.15-debug.apk
+            artifacts/WAI-Pad-${{ env.VERSION_TAG }}-debug.apk
             artifacts/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
